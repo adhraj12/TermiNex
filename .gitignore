@@ -1,0 +1,28 @@
+# Environment & Virtual Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Hackathon Research & Temp Notes
+temp/
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# TermiNex Local Runtime & Logs
+.terminex/
+*.db-journal
+*.wal
