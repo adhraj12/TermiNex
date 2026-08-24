@@ -16,20 +16,6 @@ class DiagnosticPlaybookEngine:
         self.playbooks_dir = playbooks_dir or Path(__file__).parent / "playbooks"
         self.playbooks: List[Dict[str, Any]] = self._load_playbooks()
 
-    def _load_playbooks() -> List[Dict[str, Any]]:
-        playbooks = []
-        if not self.playbooks_dir.exists():
-            return []
-        for file in self.playbooks_dir.glob("*.yaml"):
-            try:
-                with open(file, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f)
-                    if data and "id" in data:
-                        playbooks.append(data)
-            except Exception:
-                pass
-        return playbooks
-
     def _load_playbooks(self) -> List[Dict[str, Any]]:
         playbooks = []
         if not self.playbooks_dir.exists():

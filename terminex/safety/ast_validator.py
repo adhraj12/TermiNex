@@ -7,6 +7,7 @@ import bashlex
 
 # Privilege escalation and wrapper binaries
 PRIVILEGE_WRAPPERS: Set[str] = {"sudo", "doas", "pkexec", "su", "env", "nohup", "nice", "xargs"}
+SHELL_WRAPPERS: Set[str] = {"sh", "bash", "dash", "zsh", "ksh", "csh", "tcsh"}
 
 # High risk & blacklisted commands / patterns
 DANGEROUS_BINARIES: Set[str] = {
@@ -25,10 +26,14 @@ class ASTSecurityValidator:
     def __init__(self):
         pass
 
-    def validate_command(self, cmd_str: str) -> Dict[str, Any]:
+    def validate_command(self, cmd_str: str, depth: int = 0) -> Dict[str, Any]:
         cmd_str = cmd_str.strip()
         if not cmd_str:
             return {"valid": False, "reason": "Empty command string", "risk_level": "UNKNOWN", "is_dangerous": False}
+
+        # Prevent runaway recursion on nested shells
+        if depth > 5:
+            return {"valid": False, "is_dangerous": True, "reasons": ["Excessive subshell recursion depth"], "raw_command": cmd_str}
 
         # 1. Regex check for obvious fork bombs & destructive pipes
         if re.search(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", cmd_str):
@@ -82,6 +87,17 @@ class ASTSecurityValidator:
                     effective_binary, effective_args = self._unwrap_command(parts)
                     unwrapped_commands.append(effective_binary)
 
+                    # Check shell -c encapsulation (e.g. sudo sh -c "rm -rf /")
+                    if effective_binary in SHELL_WRAPPERS:
+                        for i, arg in enumerate(effective_args):
+                            if arg == "-c" and i + 1 < len(effective_args):
+                                inner_payload = effective_args[i + 1]
+                                subshells_found.append(inner_payload)
+                                inner_res = self.validate_command(inner_payload, depth=depth + 1)
+                                if inner_res.get("is_dangerous", False):
+                                    is_dangerous = True
+                                    danger_reasons.extend(inner_res.get("reasons", ["Dangerous command in shell -c wrapper"]))
+
                     # 1. Check dangerous binaries
                     if effective_binary in DANGEROUS_BINARIES or any(b in DANGEROUS_BINARIES for b in parts):
                         is_dangerous = True
@@ -108,7 +124,7 @@ class ASTSecurityValidator:
                                 is_dangerous = True
                                 danger_reasons.append("Recursive permission change on root/system directory")
 
-                    # 4. Check find -delete or find -exec rm
+                    # 4. Check find -delete targeted at root
                     if effective_binary == "find":
                         if "-delete" in effective_args:
                             if any(target in CRITICAL_SYSTEM_PATHS for target in effective_args if not target.startswith("-")):
@@ -117,7 +133,15 @@ class ASTSecurityValidator:
 
             # Check subshells and command substitution
             elif kind in ("commandsubstitution", "processsubstitution"):
-                subshells_found.append(cmd_str[node.pos[0] : node.pos[1]])
+                sub_str = cmd_str[node.pos[0] : node.pos[1]]
+                subshells_found.append(sub_str)
+                # Strip $(...) or `...`
+                inner = sub_str.strip("$()`")
+                if inner:
+                    sub_res = self.validate_command(inner, depth=depth + 1)
+                    if sub_res.get("is_dangerous", False):
+                        is_dangerous = True
+                        danger_reasons.extend(sub_res.get("reasons", ["Dangerous subshell substitution"]))
 
             # Check redirections (e.g. > /etc/shadow or > /dev/sda)
             elif kind == "redirect":
@@ -158,7 +182,7 @@ class ASTSecurityValidator:
                 idx += 1
                 # Skip flags passed to sudo (e.g. sudo -u root rm)
                 while idx < len(parts) and parts[idx].startswith("-"):
-                    if parts[idx] in ("-u", "-g", "-C") and idx + 1 < len(parts):
+                    if parts[idx] in ("-u", "-g", "-C", "-D") and idx + 1 < len(parts):
                         idx += 2
                     else:
                         idx += 1
@@ -186,6 +210,14 @@ class ASTSecurityValidator:
         if effective_binary == "rm" and any(a in ["-rf", "-fr", "-r", "-R"] for a in effective_args):
             if any(target in CRITICAL_SYSTEM_PATHS for target in effective_args if not target.startswith("-")):
                 is_dangerous = True
+
+        # Check sh -c in fallback
+        if effective_binary in SHELL_WRAPPERS and "-c" in effective_args:
+            idx = effective_args.index("-c")
+            if idx + 1 < len(effective_args):
+                inner_cmd = " ".join(effective_args[idx + 1 :])
+                if any(b in inner_cmd for b in DANGEROUS_BINARIES) or "rm -rf" in inner_cmd:
+                    is_dangerous = True
 
         return {
             "valid": not is_dangerous,

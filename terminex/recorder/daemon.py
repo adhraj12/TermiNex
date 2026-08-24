@@ -6,7 +6,7 @@ import platform
 import subprocess
 import threading
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 import psutil
 from terminex.config import FLIGHT_RECORDER_INTERVAL_SECONDS
 from terminex.recorder.store import FlightRecorderStore
@@ -21,7 +21,8 @@ class FlightRecorderDaemon:
         self._last_time = time.time()
         self._tracked_services = ["nginx", "apache2", "postgresql", "mysql", "ssh", "docker"]
         self._prev_service_states: Dict[str, str] = {}
-        self._seen_journal_cursors = set()
+        self._seen_journal_cursors: Set[str] = set()
+        self._seen_oom_lines: Set[str] = set()
 
     def start(self, background: bool = True):
         self.running = True
@@ -133,8 +134,10 @@ class FlightRecorderDaemon:
                         entry = json.loads(line)
                         msg = entry.get("MESSAGE", "")
                         unit = entry.get("_SYSTEMD_UNIT", entry.get("SYSLOG_IDENTIFIER", "system"))
-                        cursor = entry.get("__CURSOR", msg[:30])
+                        cursor = entry.get("__CURSOR", msg[:40])
                         if cursor not in self._seen_journal_cursors:
+                            if len(self._seen_journal_cursors) > 500:
+                                self._seen_journal_cursors.clear()
                             self._seen_journal_cursors.add(cursor)
                             self.store.record_event(
                                 event_type="JOURNALD_ERROR",
@@ -157,15 +160,20 @@ class FlightRecorderDaemon:
                 timeout=2,
             )
             if res.returncode == 0 and res.stdout:
-                for line in res.stdout.splitlines()[-10:]:
+                for line in res.stdout.splitlines()[-15:]:
                     if "Out of memory" in line or "killed process" in line.lower():
-                        self.store.record_event(
-                            event_type="OOM_KILL",
-                            source="kernel",
-                            severity="CRITICAL",
-                            title=f"Kernel OOM: {line[-60:]}",
-                            details={"dmesg_line": line},
-                        )
+                        clean_line = line.strip()
+                        if clean_line not in self._seen_oom_lines:
+                            if len(self._seen_oom_lines) > 500:
+                                self._seen_oom_lines.clear()
+                            self._seen_oom_lines.add(clean_line)
+                            self.store.record_event(
+                                event_type="OOM_KILL",
+                                source="kernel",
+                                severity="CRITICAL",
+                                title=f"Kernel OOM: {clean_line[-60:]}",
+                                details={"dmesg_line": clean_line},
+                            )
         except Exception:
             pass
 

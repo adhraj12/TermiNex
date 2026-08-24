@@ -25,3 +25,9 @@ dependencies = [
 
 [project.scripts]
 terminex = "terminex.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["terminex*"]
+
+[tool.setuptools.package-data]
+"terminex.engine" = ["playbooks/*.yaml"]

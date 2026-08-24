@@ -42,7 +42,7 @@ class RiskScorer:
                 "requires_rehearsal": True,
                 "requires_explicit_confirmation": True,
                 "can_auto_execute": False,
-                "reason": "; ".join(ast_info.get("reasons", ["AST flag dangerous"])),
+                "reason": "; ".join(ast_info.get("reasons", ["AST flagged critical danger"])),
             }
 
         commands = ast_info.get("commands", [])
@@ -51,9 +51,9 @@ class RiskScorer:
 
         tokens = cmd_clean.split()
 
-        # 2. Check find with destructive flags
+        # 2. Check find with -delete vs -exec <binary>
         if "find" in commands:
-            if "-delete" in tokens or "-exec" in tokens or "-execdir" in tokens:
+            if "-delete" in tokens:
                 return {
                     "tier": 2,
                     "tier_name": "TIER_2_HIGH_RISK",
@@ -61,22 +61,52 @@ class RiskScorer:
                     "requires_rehearsal": True,
                     "requires_explicit_confirmation": True,
                     "can_auto_execute": False,
-                    "reason": "Command uses 'find' with destructive execution/deletion flags (-delete / -exec)",
+                    "reason": "Command uses 'find -delete' which directly removes files",
                 }
+            if "-exec" in tokens or "-execdir" in tokens:
+                # Extract binary invoked by -exec
+                exec_idx = tokens.index("-exec") if "-exec" in tokens else tokens.index("-execdir")
+                if exec_idx + 1 < len(tokens):
+                    sub_bin = tokens[exec_idx + 1].split("/")[-1]
+                    if sub_bin in READ_ONLY_BINARIES:
+                        pass  # e.g. find ... -exec ls -lh {} + is safe read-only!
+                    elif sub_bin in HIGH_RISK_BINARIES or sub_bin in ("sh", "bash"):
+                        return {
+                            "tier": 2,
+                            "tier_name": "TIER_2_HIGH_RISK",
+                            "color": "red",
+                            "requires_rehearsal": True,
+                            "requires_explicit_confirmation": True,
+                            "can_auto_execute": False,
+                            "reason": f"Command uses 'find -exec' with potentially destructive binary '{sub_bin}'",
+                        }
 
-        # 3. Check systemctl operations
+        # 3. Check systemctl operations (even in compound commands like `sudo nginx -t && sudo systemctl status nginx`)
         if "systemctl" in commands:
-            sub_actions = [t for t in tokens if not t.startswith("-") and t not in ("systemctl", "sudo", "doas", "pkexec")]
-            if sub_actions and sub_actions[0] in SYSTEMCTL_READ_ONLY:
-                return {
-                    "tier": 0,
-                    "tier_name": "TIER_0_READ_ONLY",
-                    "color": "green",
-                    "requires_rehearsal": False,
-                    "requires_explicit_confirmation": False,
-                    "can_auto_execute": True,
-                    "reason": f"Read-only systemctl inspection action '{sub_actions[0]}'",
-                }
+            systemctl_actions: List[str] = []
+            for i, t in enumerate(tokens):
+                if t.endswith("systemctl") or t == "systemctl":
+                    # Scan following tokens for non-flag action
+                    for nxt in tokens[i + 1 : i + 4]:
+                        if not nxt.startswith("-") and nxt not in ("sudo", "doas", "pkexec", "&&", "||", ";"):
+                            systemctl_actions.append(nxt)
+                            break
+
+            is_all_read = bool(systemctl_actions) and all(act in SYSTEMCTL_READ_ONLY for act in systemctl_actions)
+            if is_all_read:
+                # Verify other commands in pipeline/compound are also read-only or nominal syntax tests
+                other_cmds = [c for c in commands if c != "systemctl"]
+                if all(c in READ_ONLY_BINARIES or c == "nginx" for c in other_cmds):
+                    return {
+                        "tier": 0,
+                        "tier_name": "TIER_0_READ_ONLY",
+                        "color": "green",
+                        "requires_rehearsal": False,
+                        "requires_explicit_confirmation": False,
+                        "can_auto_execute": True,
+                        "reason": f"Read-only systemctl inspection action '{', '.join(systemctl_actions)}'",
+                    }
+
             return {
                 "tier": 1,
                 "tier_name": "TIER_1_MUTATING",
@@ -173,7 +203,7 @@ class RiskScorer:
                 }
 
         # 9. Check if all commands are Read-Only
-        if all(cmd in READ_ONLY_BINARIES for cmd in commands):
+        if all(cmd in READ_ONLY_BINARIES or cmd in ("nginx", "true", "echo") for cmd in commands):
             return {
                 "tier": 0,
                 "tier_name": "TIER_0_READ_ONLY",
