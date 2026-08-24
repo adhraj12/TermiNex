@@ -24,8 +24,7 @@ class SandboxRehearsalEngine:
         target_dir: Optional[Path] = None,
         timeout_seconds: int = 10,
     ) -> Dict[str, Any]:
-        """Rehearse a command in an isolated environment and return the observed diff."""
-        run_id = f"rehearsal_{os.getpid()}_{int(tempfile.gettempdir().count('a'))}"
+        """Rehearse a command in an isolated environment and return the observed diff & affected paths."""
         work_dir = Path(tempfile.mkdtemp(prefix="terminex_sandbox_", dir=str(self.sandbox_base)))
         pre_state_dir = work_dir / "pre"
         post_state_dir = work_dir / "post"
@@ -34,13 +33,11 @@ class SandboxRehearsalEngine:
         post_state_dir.mkdir()
 
         # Copy target directory context if provided
-        target = Path(target_dir) if target_dir else Path.cwd()
+        target = Path(target_dir).resolve() if target_dir else Path.cwd().resolve()
         if target.exists() and target.is_dir():
-            # Copy sample files (max 200 files or 20MB to ensure high performance)
             self._safe_copy_tree(target, pre_state_dir)
             self._safe_copy_tree(target, post_state_dir)
 
-        # Execute command inside post_state_dir
         is_linux = platform.system() == "Linux"
         bwrap_available = shutil.which("bwrap") is not None
 
@@ -49,7 +46,6 @@ class SandboxRehearsalEngine:
 
         try:
             if is_linux and bwrap_available:
-                # Use Bubblewrap unprivileged sandbox
                 proc = subprocess.run(
                     [
                         "bwrap",
@@ -69,7 +65,6 @@ class SandboxRehearsalEngine:
                     env=env,
                 )
             else:
-                # Portable isolated subshell execution
                 shell_cmd = ["bash", "-c", command] if is_linux else ["powershell", "-Command", command]
                 proc = subprocess.run(
                     shell_cmd,
@@ -96,7 +91,25 @@ class SandboxRehearsalEngine:
         # Compute observed diff
         diff_data = DiffEngine.compare_directories(pre_state_dir, post_state_dir)
 
-        # Cleanup sandbox directory
+        # Extract list of affected host paths for the snapshot engine
+        affected_paths: List[Path] = []
+        for f in diff_data.get("added_files", []):
+            affected_paths.append(target / f)
+        for f in diff_data.get("deleted_files", []):
+            affected_paths.append(target / f)
+        for d in diff_data.get("file_diffs", []):
+            p = target / d["path"]
+            if p not in affected_paths:
+                affected_paths.append(p)
+
+        # Also extract any explicit absolute paths from command string (e.g. /etc/nginx/...)
+        for token in command.split():
+            if token.startswith("/") and len(token) > 2 and not token.startswith("/bin") and not token.startswith("/usr/bin"):
+                p_cand = Path(token.split("=")[-1])
+                if p_cand not in affected_paths and (p_cand.exists() or p_cand.parent.exists()):
+                    affected_paths.append(p_cand)
+
+        # Cleanup sandbox temp directory
         try:
             shutil.rmtree(work_dir, ignore_errors=True)
         except Exception:
@@ -109,13 +122,13 @@ class SandboxRehearsalEngine:
             "stderr": stderr,
             "diff_data": diff_data,
             "has_mutations": diff_data.get("has_changes", False),
+            "affected_paths": [str(p) for p in affected_paths],
             "formatted_diff": DiffEngine.format_diff_for_terminal(diff_data),
         }
 
     def _safe_copy_tree(self, src: Path, dst: Path, max_files: int = 150):
         count = 0
         for root, dirs, files in os.walk(src):
-            # Skip hidden and cache folders
             dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("node_modules", "__pycache__", "venv")]
             rel_root = Path(root).relative_to(src)
             target_sub = dst / rel_root

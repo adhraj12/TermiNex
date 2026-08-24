@@ -7,7 +7,7 @@ import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from terminex.config import AUDIT_LOG_PATH, SNAPSHOTS_DIR
 
 
@@ -18,7 +18,6 @@ class UndoJournal:
         self.snapshots_dir = Path(snapshots_dir)
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
         self.audit_log = Path(audit_log)
-        self._last_hash = self._get_last_audit_hash()
 
     def _get_last_audit_hash(self) -> str:
         if not self.audit_log.exists():
@@ -36,7 +35,7 @@ class UndoJournal:
     def create_snapshot(
         self,
         command: str,
-        target_paths: List[Path],
+        target_paths: List[Union[str, Path]],
         intent_description: str = "",
     ) -> Dict[str, Any]:
         """Creates a pre-mutation snapshot of target paths and generates a transaction receipt."""
@@ -47,35 +46,37 @@ class UndoJournal:
         backup_manifest: List[Dict[str, Any]] = []
 
         for p in target_paths:
-            path_obj = Path(p).resolve()
-            if path_obj.exists():
+            try:
+                path_obj = Path(p).resolve()
                 rel_id = hashlib.md5(str(path_obj).encode()).hexdigest()[:10]
-                if path_obj.is_file():
-                    dest = tx_dir / f"file_{rel_id}_{path_obj.name}"
-                    shutil.copy2(path_obj, dest)
+                if path_obj.exists():
+                    if path_obj.is_file():
+                        dest = tx_dir / f"file_{rel_id}_{path_obj.name}"
+                        shutil.copy2(path_obj, dest)
+                        backup_manifest.append({
+                            "type": "FILE",
+                            "original_path": str(path_obj),
+                            "backup_file": str(dest.name),
+                            "exists_originally": True,
+                        })
+                    elif path_obj.is_dir():
+                        dest = tx_dir / f"dir_{rel_id}_{path_obj.name}"
+                        shutil.copytree(path_obj, dest, dirs_exist_ok=True)
+                        backup_manifest.append({
+                            "type": "DIR",
+                            "original_path": str(path_obj),
+                            "backup_file": str(dest.name),
+                            "exists_originally": True,
+                        })
+                else:
                     backup_manifest.append({
-                        "type": "FILE",
+                        "type": "NEW_FILE",
                         "original_path": str(path_obj),
-                        "backup_file": str(dest.name),
-                        "exists_originally": True,
+                        "backup_file": None,
+                        "exists_originally": False,
                     })
-                elif path_obj.is_dir():
-                    dest = tx_dir / f"dir_{rel_id}_{path_obj.name}"
-                    shutil.copytree(path_obj, dest, dirs_exist_ok=True)
-                    backup_manifest.append({
-                        "type": "DIR",
-                        "original_path": str(path_obj),
-                        "backup_file": str(dest.name),
-                        "exists_originally": True,
-                    })
-            else:
-                # File does not exist yet (will be created by command)
-                backup_manifest.append({
-                    "type": "NEW_FILE",
-                    "original_path": str(path_obj),
-                    "backup_file": None,
-                    "exists_originally": False,
-                })
+            except Exception:
+                pass
 
         manifest_file = tx_dir / "manifest.json"
         manifest_data = {
@@ -90,14 +91,15 @@ class UndoJournal:
         with open(manifest_file, "w", encoding="utf-8") as f:
             json.dump(manifest_data, f, indent=2)
 
-        # Append to SHA-256 hash-chained audit log
-        raw_payload = f"{self._last_hash}:{tx_id}:{command}:{manifest_data['iso_time']}"
+        # Dynamic read of latest hash to prevent forks across processes
+        last_hash = self._get_last_audit_hash()
+        raw_payload = f"{last_hash}:{tx_id}:{command}:{manifest_data['iso_time']}"
         curr_hash = hashlib.sha256(raw_payload.encode()).hexdigest()
 
         audit_entry = {
             "tx_id": tx_id,
             "hash": curr_hash,
-            "prev_hash": self._last_hash,
+            "prev_hash": last_hash,
             "iso_time": manifest_data["iso_time"],
             "command": command,
             "intent": intent_description,
@@ -105,8 +107,6 @@ class UndoJournal:
         }
         with open(self.audit_log, "a", encoding="utf-8") as f:
             f.write(json.dumps(audit_entry) + "\n")
-
-        self._last_hash = curr_hash
 
         return {
             "tx_id": tx_id,
@@ -147,7 +147,7 @@ class UndoJournal:
 
             try:
                 if not orig_existed:
-                    # File was newly created by the command -> delete it to rollback
+                    # File was newly created by the command -> delete it on rollback
                     if orig.exists():
                         if orig.is_file():
                             orig.unlink()
@@ -155,7 +155,7 @@ class UndoJournal:
                             shutil.rmtree(orig)
                         deleted_count += 1
                 else:
-                    # File existed -> restore from backup
+                    # File existed -> restore from backup copy
                     if backup_name:
                         backup_src = tx_dir / backup_name
                         if backup_src.is_file():

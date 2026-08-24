@@ -1,5 +1,6 @@
 """Background telemetry collector daemon for TermiNex Flight Recorder."""
 
+import json
 import os
 import platform
 import subprocess
@@ -20,6 +21,7 @@ class FlightRecorderDaemon:
         self._last_time = time.time()
         self._tracked_services = ["nginx", "apache2", "postgresql", "mysql", "ssh", "docker"]
         self._prev_service_states: Dict[str, str] = {}
+        self._seen_journal_cursors = set()
 
     def start(self, background: bool = True):
         self.running = True
@@ -86,9 +88,11 @@ class FlightRecorderDaemon:
                 details={"cpu_percent": cpu},
             )
 
-        # 3. Check Systemd Units (on Linux)
+        # 3. Real Linux Telemetry (Systemd, Journald, OOM)
         if platform.system() == "Linux":
             self._check_linux_services()
+            self._check_journald_errors()
+            self._check_oom_events()
 
     def _check_linux_services(self):
         for svc in self._tracked_services:
@@ -102,7 +106,6 @@ class FlightRecorderDaemon:
                 state = res.stdout.strip()
                 prev = self._prev_service_states.get(svc)
                 if prev and prev == "active" and state != "active":
-                    # Unit failed or stopped
                     self.store.record_event(
                         event_type="SERVICE_FAIL",
                         source=svc,
@@ -114,10 +117,62 @@ class FlightRecorderDaemon:
             except Exception:
                 pass
 
+    def _check_journald_errors(self):
+        try:
+            res = subprocess.run(
+                ["journalctl", "-p", "err", "-n", "5", "--output=json", "--since", "1 minute ago"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if res.returncode == 0 and res.stdout:
+                for line in res.stdout.splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        msg = entry.get("MESSAGE", "")
+                        unit = entry.get("_SYSTEMD_UNIT", entry.get("SYSLOG_IDENTIFIER", "system"))
+                        cursor = entry.get("__CURSOR", msg[:30])
+                        if cursor not in self._seen_journal_cursors:
+                            self._seen_journal_cursors.add(cursor)
+                            self.store.record_event(
+                                event_type="JOURNALD_ERROR",
+                                source=unit,
+                                severity="CRITICAL",
+                                title=f"[{unit}] {msg[:80]}",
+                                details={"full_message": msg, "unit": unit},
+                            )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _check_oom_events(self):
+        try:
+            res = subprocess.run(
+                ["dmesg", "-T"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if res.returncode == 0 and res.stdout:
+                for line in res.stdout.splitlines()[-10:]:
+                    if "Out of memory" in line or "killed process" in line.lower():
+                        self.store.record_event(
+                            event_type="OOM_KILL",
+                            source="kernel",
+                            severity="CRITICAL",
+                            title=f"Kernel OOM: {line[-60:]}",
+                            details={"dmesg_line": line},
+                        )
+        except Exception:
+            pass
+
     def _run_loop(self):
         while self.running:
             try:
                 self.collect_once()
-            except Exception as e:
+            except Exception:
                 pass
             time.sleep(FLIGHT_RECORDER_INTERVAL_SECONDS)

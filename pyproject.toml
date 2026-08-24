@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terminex"
+version = "1.0.0"
+description = "AI-Powered Linux Operations Assistant Using Natural Language Queries (C-DAC Hackathon 2026)"
+readme = "README.md"
+authors = [{ name = "Adhiraj Jagtap", email = "adhirajjagtap12@gmail.com" }]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.82.0",
+    "bashlex>=0.18",
+    "rich>=13.7.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "psutil>=5.9.0",
+    "pyyaml>=6.0.1",
+    "pydantic>=2.6.0",
+    "httpx>=0.27.0",
+    "jinja2>=3.1.0",
+]
+
+[project.scripts]
+terminex = "terminex.cli:main"

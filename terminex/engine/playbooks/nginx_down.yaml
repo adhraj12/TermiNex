@@ -6,7 +6,7 @@ distros: ["all", "boss_linux", "ubuntu", "debian"]
 steps:
   - step_id: check_status
     description: "Inspect systemd unit status"
-    probe_command: "systemctl is-active nginx || echo inactive"
+    probe_command: "systemctl is-active nginx 2>/dev/null || echo 'inactive'"
     expected: "active"
     on_fail:
       next_step: test_config
@@ -14,21 +14,24 @@ steps:
   - step_id: test_config
     description: "Validate Nginx configuration syntax"
     probe_command: "nginx -t 2>&1 || echo 'syntax_error'"
-    expected: "successful"
-    on_fail:
+    on_match_pattern: "emerg|syntax_error|failed|No such file"
+    on_match:
       conclusion: "Nginx configuration syntax error detected in /etc/nginx/."
       suggested_fix: "Inspect /etc/nginx/nginx.conf and /etc/nginx/sites-enabled/ for missing semicolons, deleted includes, or invalid directives."
       recommended_command: "nginx -t"
-      remedy_template: "restore_config"
+    on_fail:
+      next_step: check_port_conflict
 
   - step_id: check_port_conflict
     description: "Check if port 80/443 is blocked by another process"
-    probe_command: "ss -tlpn '( sport = :80 or sport = :443 )' || echo 'none'"
+    probe_command: "ss -tlpn '( sport = :80 or sport = :443 )' 2>/dev/null || echo 'none'"
     on_match_pattern: "apache2|caddy|python|node"
     on_match:
       conclusion: "Port 80/443 is currently held by another competing web service."
       suggested_fix: "Stop competing service or update listen port in Nginx."
       recommended_command: "sudo systemctl stop apache2 && sudo systemctl start nginx"
+    on_fail:
+      next_step: check_log_permissions
 
   - step_id: check_log_permissions
     description: "Verify write permissions on /var/log/nginx/"

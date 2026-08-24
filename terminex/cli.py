@@ -2,6 +2,8 @@
 
 import argparse
 import os
+import platform
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -17,7 +19,6 @@ if sys.platform == "win32":
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.markdown import Markdown
 
 from terminex.config import WEB_HOST, WEB_PORT
 from terminex.engine.llm_client import LocalLLMClient
@@ -46,10 +47,24 @@ def cmd_ask(args):
 
     console.print(f"\n[bold cyan]TermiNex Engine[/bold cyan] analyzing: [bold white]'{query}'[/bold white]")
 
-    # 1. Indic Intent Check
+    # 1. Check Past Incident Memory first (Learning from experience)
+    postmortem_mem = PostmortemMemory()
+    similar_incidents = postmortem_mem.find_similar(query)
+    if similar_incidents:
+        past = similar_incidents[0]
+        console.print(Panel(
+            f"[bold yellow]Found matching historical resolution in incident memory:[/bold yellow]\n"
+            f"[bold]Past Symptom:[/bold] {past['symptom']}\n"
+            f"[bold]Root Cause:[/bold] {past['root_cause']}\n"
+            f"[bold green]Tested Solution:[/bold green] {past['resolution_command']}",
+            title="Incident Memory Match",
+            border_style="yellow",
+        ))
+
+    # 2. Indic Intent Check
     indic_match = IndicNLPRouter.parse_query(query)
 
-    # 2. Playbook Check
+    # 3. Playbook Check
     pb_engine = DiagnosticPlaybookEngine()
     playbook = pb_engine.find_playbook(query)
 
@@ -69,11 +84,11 @@ def cmd_ask(args):
         explanation = llm_res.get("explanation", "")
         source = "Sovereign Local SLM"
 
-    # 3. AST Safety Gate
+    # 4. AST Safety Gate
     validator = ASTSecurityValidator()
     ast_res = validator.validate_command(cmd)
 
-    # 4. Risk Scoring
+    # 5. Risk Scoring
     scorer = RiskScorer()
     risk = scorer.score_command(cmd, ast_res)
 
@@ -87,27 +102,66 @@ def cmd_ask(args):
         border_style="cyan",
     ))
 
-    # 5. Rehearsal Stage for Mutating Commands
+    affected_paths = []
+    # 6. Rehearsal Stage for Mutating Commands
     if risk.get("requires_rehearsal", False):
         console.print("[dim]Rehearsing command inside isolated Bubblewrap/OverlayFS sandbox...[/dim]")
         sandbox = SandboxRehearsalEngine()
         rehearsal = sandbox.rehearse_command(cmd)
+        affected_paths = rehearsal.get("affected_paths", [])
         diff_str = rehearsal.get("formatted_diff")
         if diff_str:
             console.print(Panel(diff_str, title="Sandbox Rehearsal Diff Preview", border_style="yellow"))
 
-    # Prompt user
+    # Prompt user if dangerous or mutating
     if risk.get("requires_explicit_confirmation", False):
         console.print(f"[bold red]HIGH RISK ACTION:[/bold red] {risk.get('reason')}")
         confirm = console.input("[bold yellow]Type 'YES' to execute with pre-mutation snapshot or Enter to abort: [/bold yellow]")
         if confirm.strip() != "YES":
             console.print("[bold red]Execution aborted by operator.[/bold red]")
             return
+    elif risk.get("tier", 0) > 0:
+        confirm = console.input("[bold yellow]Execute command with snapshot? [Y/n]: [/bold yellow]")
+        if confirm.strip().lower() in ("n", "no"):
+            console.print("[bold red]Execution aborted by operator.[/bold red]")
+            return
 
-    # Snapshot & Host Execution
+    # 7. Take Real Snapshot of Affected Paths
     undo = UndoJournal()
-    snap = undo.create_snapshot(command=cmd, target_paths=[], intent_description=query)
-    console.print(f"[bold green]Pre-mutation snapshot taken:[/bold green] [cyan]{snap['tx_id']}[/cyan] (Hash: {snap['hash'][:16]}...)")
+    snap = undo.create_snapshot(command=cmd, target_paths=affected_paths, intent_description=query)
+    console.print(f"[bold green]Pre-mutation snapshot taken:[/bold green] [cyan]{snap['tx_id']}[/cyan] ({len(affected_paths)} target paths protected)")
+
+    # 8. Real Host Execution
+    console.print(f"[dim]Executing on host: {cmd}...[/dim]")
+    is_linux = platform.system() == "Linux"
+    shell_cmd = ["bash", "-c", cmd] if is_linux else ["powershell", "-Command", cmd]
+
+    try:
+        proc = subprocess.run(shell_cmd, capture_output=True, text=True, timeout=30)
+        exit_code = proc.returncode
+        stdout = proc.stdout.strip()
+        stderr = proc.stderr.strip()
+
+        if stdout:
+            console.print(f"[bold white]{stdout}[/bold white]")
+        if stderr:
+            console.print(f"[yellow]{stderr}[/yellow]")
+
+        if exit_code == 0:
+            console.print(f"[bold green]Execution Succeeded (ExitCode: 0)[/bold green]")
+            # Save to incident memory for continuous learning
+            postmortem_mem.save_postmortem(
+                symptom=query,
+                root_cause=explanation,
+                resolution_command=cmd,
+                notes=f"Snapshot: {snap['tx_id']}",
+            )
+        else:
+            console.print(f"[bold red]Command exited with error code {exit_code}[/bold red]")
+
+    except Exception as e:
+        console.print(f"[bold red]Execution error: {str(e)}[/bold red]")
+
     console.print(f"[dim]To rollback this execution later, simply run:[/dim] [bold cyan]terminex undo {snap['tx_id']}[/bold cyan]\n")
 
 
@@ -173,6 +227,25 @@ def cmd_undo(args):
         ))
     else:
         console.print(f"[bold red]Rollback failed:[/bold red] {res.get('message')}")
+
+
+def cmd_boss(args):
+    """Lists C-DAC BOSS Linux specialized runbooks."""
+    runbooks = BossLinuxEngine.list_runbooks()
+    console.print(Panel.fit(
+        "[bold cyan]C-DAC BOSS Linux (Bharat Operating System Solutions) Runbooks[/bold cyan]\n"
+        "[dim]Native diagnostic routines for Pragya 10.0, Secure BOSS (MAC), & Meghdoot Cloud[/dim]",
+        border_style="cyan",
+    ))
+
+    table = Table(title="Available BOSS Linux Diagnostic Profiles")
+    table.add_column("Key", style="cyan")
+    table.add_column("Distribution / Target", style="bold green")
+    table.add_column("Description", style="white")
+
+    for rb in runbooks:
+        table.add_row(rb["id"], rb["distro"], rb["description"])
+    console.print(table)
 
 
 def cmd_record(args):
@@ -242,6 +315,10 @@ def main():
     p_undo = subparsers.add_parser("undo", help="Rollback previous transaction state")
     p_undo.add_argument("tx_id", nargs="?", default=None, help="Specific transaction ID (e.g. TX-1092)")
     p_undo.set_defaults(func=cmd_undo)
+
+    # boss
+    p_boss = subparsers.add_parser("boss", help="List C-DAC BOSS Linux diagnostic profiles")
+    p_boss.set_defaults(func=cmd_boss)
 
     # record
     p_record = subparsers.add_parser("record", help="Start telemetry flight recorder collector")

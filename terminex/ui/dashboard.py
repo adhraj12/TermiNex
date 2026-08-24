@@ -1,7 +1,9 @@
 """FastAPI Web Dashboard and Visual Demonstration Interface for TermiNex."""
 
 import json
-from typing import Any, Dict, Optional
+import platform
+import subprocess
+from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,7 +29,7 @@ app = FastAPI(title="TermiNex Operations Console", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -48,8 +50,9 @@ class QueryRequest(BaseModel):
     query: str
 
 
-class RehearseRequest(BaseModel):
+class ExecuteRequest(BaseModel):
     command: str
+    affected_paths: Optional[List[str]] = None
 
 
 class UndoRequest(BaseModel):
@@ -85,7 +88,7 @@ async def get_incident_timeline(minutes: int = 30):
 async def process_query(req: QueryRequest):
     q = req.query.strip()
 
-    # 1. Check Indic Intent Router first
+    # 1. Check Indic Intent Router
     indic_match = IndicNLPRouter.parse_query(q)
 
     # 2. Check Diagnostic Playbooks
@@ -111,8 +114,10 @@ async def process_query(req: QueryRequest):
     ast_res = validator.validate_command(cmd)
     risk_info = risk_scorer.score_command(cmd, ast_res)
 
-    # 5. Sandbox Rehearsal
-    rehearsal = sandbox.rehearse_command(cmd)
+    # 5. Sandbox Rehearsal only if mutating
+    rehearsal = None
+    if risk_info.get("requires_rehearsal", False):
+        rehearsal = sandbox.rehearse_command(cmd)
 
     return {
         "query": q,
@@ -127,7 +132,7 @@ async def process_query(req: QueryRequest):
 
 
 @app.post("/api/rehearse")
-async def rehearse_custom_command(req: RehearseRequest):
+async def rehearse_custom_command(req: ExecuteRequest):
     cmd = req.command.strip()
     ast_res = validator.validate_command(cmd)
     risk_info = risk_scorer.score_command(cmd, ast_res)
@@ -141,33 +146,63 @@ async def rehearse_custom_command(req: RehearseRequest):
 
 
 @app.post("/api/execute")
-async def execute_command(req: RehearseRequest):
+async def execute_command(req: ExecuteRequest):
     cmd = req.command.strip()
     ast_res = validator.validate_command(cmd)
     if not ast_res.get("valid", True) and ast_res.get("is_dangerous", False):
         return JSONResponse(status_code=400, content={"error": "Command blocked by AST Security Kernel"})
 
-    # Take Pre-Mutation Snapshot
+    target_paths = req.affected_paths or []
+
+    # Take Pre-Mutation Snapshot of actual affected paths
     snap = undo_journal.create_snapshot(
         command=cmd,
-        target_paths=[],
-        intent_description=f"User approved execution of '{cmd}'",
+        target_paths=target_paths,
+        intent_description=f"Operator approved execution of '{cmd}'",
     )
 
-    # Execute and record event
+    # Execute on Host
+    is_linux = platform.system() == "Linux"
+    shell_cmd = ["bash", "-c", cmd] if is_linux else ["powershell", "-Command", cmd]
+    exit_code = 0
+    stdout = ""
+    stderr = ""
+
+    try:
+        proc = subprocess.run(shell_cmd, capture_output=True, text=True, timeout=30)
+        exit_code = proc.returncode
+        stdout = proc.stdout.strip()
+        stderr = proc.stderr.strip()
+    except Exception as e:
+        exit_code = -1
+        stderr = str(e)
+
+    # Record event in Flight Recorder
     store.record_event(
         event_type="HOST_EXECUTION",
         source="operator",
-        severity="INFO",
-        title=f"Executed command: {cmd}",
-        details={"tx_id": snap["tx_id"]},
+        severity="INFO" if exit_code == 0 else "WARN",
+        title=f"Executed command: {cmd} (ExitCode: {exit_code})",
+        details={"tx_id": snap["tx_id"], "exit_code": exit_code, "stdout": stdout, "stderr": stderr},
     )
+
+    # Save to incident memory if successful
+    if exit_code == 0:
+        postmortem_store.save_postmortem(
+            symptom=cmd,
+            root_cause="Manual or AI-guided operational execution",
+            resolution_command=cmd,
+            notes=f"Snapshot: {snap['tx_id']}",
+        )
 
     return {
         "status": "EXECUTED",
         "tx_id": snap["tx_id"],
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
         "receipt_hash": snap["hash"],
-        "message": f"Command executed successfully under transaction receipt {snap['tx_id']}",
+        "message": f"Command finished with exit code {exit_code} (Snapshot: {snap['tx_id']})",
     }
 
 
@@ -198,7 +233,6 @@ async def inject_chaos(req: ChaosRequest):
     import time
     now = time.time()
 
-    # Step 1: File Deletion Event 15s ago
     store.record_file_mutation(
         action="DELETE",
         file_path="/etc/nginx/sites-enabled/default",
@@ -206,7 +240,6 @@ async def inject_chaos(req: ChaosRequest):
         timestamp=now - 18,
     )
 
-    # Step 2: Service Crash Event 10s ago
     store.record_event(
         event_type="SERVICE_FAIL",
         source="nginx",
@@ -216,7 +249,6 @@ async def inject_chaos(req: ChaosRequest):
         timestamp=now - 12,
     )
 
-    # Step 3: Storage anomaly
     store.record_event(
         event_type="DISK_PRESSURE",
         source="storage",
@@ -260,13 +292,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TermiNex - AI-Powered Linux Operations Assistant</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-dark: #090d16;
-      --card-bg: rgba(18, 26, 44, 0.7);
+      --card-bg: rgba(18, 26, 44, 0.75);
       --card-border: rgba(56, 189, 248, 0.15);
       --accent-cyan: #38bdf8;
       --accent-blue: #3b82f6;
@@ -281,14 +310,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     body {
       background: radial-gradient(circle at top right, #111e38 0%, #080c14 100%);
       color: var(--text-main);
-      font-family: 'Outfit', sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
     }
 
     header {
-      background: rgba(10, 15, 29, 0.85);
+      background: rgba(10, 15, 29, 0.9);
       backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--card-border);
       padding: 1rem 2rem;
@@ -336,7 +365,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       cursor: pointer;
       border: none;
       transition: all 0.2s;
-      font-family: 'Outfit', sans-serif;
+      font-family: inherit;
     }
     .btn-chaos { background: #dc2626; color: #fff; box-shadow: 0 0 15px rgba(220, 38, 38, 0.4); }
     .btn-chaos:hover { background: #b91c1c; transform: translateY(-1px); }
@@ -418,16 +447,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       border: 1px solid rgba(255, 255, 255, 0.1);
       border-radius: 8px;
       padding: 1rem;
-      font-family: 'Fira Code', monospace;
+      font-family: "Consolas", "Monaco", "Courier New", monospace;
       font-size: 0.85rem;
       line-height: 1.45;
       max-height: 320px;
       overflow-y: auto;
       white-space: pre-wrap;
     }
-    .terminal-diff-add { color: #34d399; }
-    .terminal-diff-del { color: #f87171; }
-    .terminal-diff-mod { color: #fbbf24; }
 
     .timeline-list {
       display: flex;
@@ -460,7 +486,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       padding: 0.5rem 0.75rem;
       text-align: center;
     }
-    .metric-value { font-size: 1.2rem; font-weight: 700; color: var(--accent-cyan); font-family: 'Fira Code', monospace; }
+    .metric-value { font-size: 1.2rem; font-weight: 700; color: var(--accent-cyan); font-family: monospace; }
     .metric-label { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; }
 
     footer {
@@ -571,6 +597,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <script>
     let currentRecommendedCommand = "";
+    let currentAffectedPaths = [];
 
     function setQuery(text) {
       document.getElementById('queryInput').value = text;
@@ -594,6 +621,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const data = await res.json();
 
         currentRecommendedCommand = data.recommended_command;
+        currentAffectedPaths = data.rehearsal?.affected_paths || [];
         cmdTerm.innerText = "$ " + data.recommended_command;
 
         const expBox = document.getElementById('explanationBox');
@@ -631,7 +659,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const res = await fetch('/api/execute', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({command: currentRecommendedCommand})
+        body: JSON.stringify({
+          command: currentRecommendedCommand,
+          affected_paths: currentAffectedPaths
+        })
       });
       const data = await res.json();
       alert(data.message || "Executed");
@@ -695,7 +726,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
-    // Polling status
     setInterval(async () => {
       try {
         const res = await fetch('/api/status');
