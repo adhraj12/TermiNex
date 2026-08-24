@@ -526,30 +526,40 @@ All benchmarks were evaluated on standard hardware ($8\text{GB RAM, 4-core x86\_
 git clone https://github.com/adhraj12/TermiNex.git
 cd TermiNex
 
-# 2. Install dependencies
+# 2. Automated installer (Linux & C-DAC BOSS Linux)
+bash scripts/install_deps.sh
+
+# Or install manually via pip
 pip install -r requirements.txt
-# Alternatively: pip install textual bashlex fastapi uvicorn rich psutil pyyaml pydantic
+pip install -e .
 ```
 
 ### 10.2 Execute Core Capabilities
 
 ```bash
-# 1. Ask a Natural Language Operational Query
-python -m terminex.cli ask "Find large log files taking up disk space in /var/log"
+# 1. Run the Live Automated Safety Kernel Self-Test Matrix (11 Probes)
+python -m terminex.cli selftest
 
-# 2. Query the Black-Box Flight Recorder for Time-Travel RCA
+# 2. Ask a Natural Language Operational Query (English or Hindi)
+python -m terminex.cli ask "Find large log files taking up disk space in /var/log"
+python -m terminex.cli ask "वेबसाइट क्यों बंद है और क्या समस्या है?"
+
+# 3. Query the Black-Box Flight Recorder for Time-Travel RCA
 python -m terminex.cli timeline --minutes 30
 
-# 3. Search Configs with AST Structural Outline & Secret Redaction
+# 4. Search Configs with AST Structural Outline & Secret Redaction
 python -m terminex.cli search "nginx"
 
-# 4. Rollback Previous Mutating Execution
+# 5. List C-DAC BOSS Linux (Pragya 10.0) Diagnostic Profiles
+python -m terminex.cli boss
+
+# 6. Rollback Previous Mutating Execution
 python -m terminex.cli undo
 
-# 5. Launch the 90-Second Automated Judge Showcase Demo
+# 7. Launch the 90-Second Automated Judge Showcase Demo
 python -m terminex.cli demo
 
-# 6. Launch the Glassmorphic Web Demo Dashboard
+# 8. Launch the Glassmorphic Web Demo Dashboard
 python -m terminex.cli web --port 8420
 # -> Open http://127.0.0.1:8420 in browser
 ```
@@ -559,8 +569,8 @@ python -m terminex.cli web --port 8420
 ```bash
 python -m unittest discover -s tests
 # ----------------------------------------------------------------------
-# Ran 9 tests in 0.780s
-# OK (100% PASS RATE)
+# Ran 15 tests in 1.009s
+# OK (100% PASS RATE - Core + Adversarial Attack Probe Matrix)
 ```
 
 ---
