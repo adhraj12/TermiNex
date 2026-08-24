@@ -1,0 +1,14 @@
+id: oom_crash
+name: "Out-Of-Memory (OOM) Process Termination Diagnostic"
+symptom_keywords: ["oom", "killed", "out of memory", "ram", "crash", "मेमोरी"]
+distros: ["all", "boss_linux", "ubuntu", "debian"]
+
+steps:
+  - step_id: check_dmesg_oom
+    description: "Scan kernel ring buffer for Out of Memory Killer invocations"
+    probe_command: "dmesg -T 2>/dev/null | grep -i 'killed process' | tail -n 3 || echo 'none'"
+    on_match_pattern: "killed process|Out of memory"
+    on_match:
+      conclusion: "Process was terminated by the Linux Kernel OOM Killer due to physical RAM exhaustion."
+      suggested_fix: "Inspect top memory consuming processes, tune worker process concurrency, or configure swap space."
+      recommended_command: "ps aux --sort=-%mem | head -n 10"

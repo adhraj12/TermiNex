@@ -1,0 +1,21 @@
+id: disk_full
+name: "Storage Space & Inode Saturation Diagnostic"
+symptom_keywords: ["disk", "storage", "no space", "full", "डिस्क", "भर गई"]
+distros: ["all", "boss_linux", "ubuntu", "debian"]
+
+steps:
+  - step_id: check_root_usage
+    description: "Check filesystem space usage on root partition"
+    probe_command: "df -h / | awk 'NR==2 {print $5}'"
+    threshold_percent: 85
+    on_fail:
+      next_step: find_large_logs
+
+  - step_id: find_large_logs
+    description: "Identify largest files in /var/log/"
+    probe_command: "find /var/log -type f -size +50M -exec ls -lh {} + 2>/dev/null | head -n 5 || echo 'none'"
+    on_match_pattern: "/var/log"
+    on_match:
+      conclusion: "Storage pressure caused by overgrown log files in /var/log/."
+      suggested_fix: "Rotate or vacuum old system logs to reclaim immediate disk space."
+      recommended_command: "sudo journalctl --vacuum-time=3d && sudo truncate -s 0 /var/log/nginx/access.log 2>/dev/null || true"
