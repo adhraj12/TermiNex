@@ -1,0 +1,132 @@
+@startuml TermiNex_Academic_Architecture
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Helvetica", "Arial", sans-serif
+skinparam defaultFontSize 11
+skinparam defaultFontColor #0F172A
+skinparam roundCorner 4
+skinparam shadowing false
+
+skinparam ArrowColor #1E293B
+skinparam ArrowThickness 1.2
+skinparam ArrowFontSize 10
+
+skinparam rectangle {
+    BackgroundColor #FFFFFF
+    BorderColor #1E293B
+    BorderThickness 1.2
+    FontColor #0F172A
+}
+
+skinparam package {
+    BackgroundColor #F8FAFC
+    BorderColor #94A3B8
+    BorderThickness 1.2
+    FontColor #0F172A
+    FontSize 12
+    FontStyle bold
+}
+
+skinparam database {
+    BackgroundColor #F1F5F9
+    BorderColor #334155
+    BorderThickness 1.2
+    FontColor #0F172A
+}
+
+title **Figure 1: TermiNex System Architecture — Modular Overview**\n//A Sovereign, Telemetry-Grounded, and Reversible Linux Operations Assistant//\n
+
+package "1. Omnichannel Intake & Localization Subsystem" as L1 {
+    actor "SysAdmin / Operator" as User #E2E8F0
+    rectangle "Textual TUI / Interactive CLI\n[Terminal PTY]" as TUI
+    rectangle "Web Dashboard\n[REST / WebSocket]" as WebUI
+    rectangle "MCP Protocol Server\n[JSON-RPC 2.0]" as MCP
+    rectangle "Indic NLP Router\n[Hindi & Marathi Intent Mapper]" as Indic #E0F2FE
+}
+
+package "2. Dual-Speed Cognitive Engine & Reasoning Core" as L2 {
+    rectangle "Cognitive Task Router" as Router #FEF3C7
+    rectangle "Fast-Path Evaluator (<50ms)\n[In-Memory Direct Query]" as FastPath #DCFCE7
+    rectangle "Sovereign Air-Gapped SLM\n[Ollama Qwen2.5-Coder-7B]" as SLM #F3E8FF
+    
+    package "LangGraph ReAct Diagnostic Loop" as ReAct {
+        rectangle "1. Hypothesis Generation\n[Incident Triage]" as Step1
+        rectangle "2. Telemetry Probe Dispatch\n[Read-Only Probes]" as Step2
+        rectangle "3. Guardrail Self-Critique\n[AST Allowlist Check]" as Step3
+    }
+    
+    database "YAML Diagnostic Playbooks\n[nginx, disk, oom, port]" as Playbooks
+    database "Incident Postmortem Memory\n[SQLite Incident Store]" as Memory
+}
+
+package "3. Grounding & Structural Retrieval Layer" as L3 {
+    package "Black-Box Flight Recorder" as FR {
+        rectangle "Collector Daemon\n[psutil + systemd-dbus]" as Daemon
+        database "SQLite WAL Ring Buffer\n[24h Metrics & Events]" as RingBuf
+        rectangle "Time-Travel RCA Correlator\n[Chronological Narrative]" as TimeTravel
+    }
+    package "Structural Search & Sanitization" as Search {
+        rectangle "Fast Search Engine\n[fd + ripgrep]" as FdRg
+        rectangle "AST Outline Extractor\n[55% Token Compression]" as ASTOutline
+        rectangle "Zero-Leak Credential Redactor\n[Regex / Entropy Filter]" as Scrubber #D1FAE5
+    }
+}
+
+package "4. Formal Zero-Trust Safety Kernel" as L4 {
+    rectangle "AST Semantic Validator\n[tree-sitter-bash & bashlex Walker]" as ASTGate #FEE2E2
+    rectangle "Blast-Radius Risk Scorer\n[Tier 0: Read | Tier 1: Mut | Tier 2: Dang]" as Scorer #FFEDD5
+    
+    package "Isolated Rehearsal Sandbox" as Sandbox {
+        rectangle "Bubblewrap + OverlayFS\n[Unprivileged Namespace Twin]" as Bwrap #FFEDD5
+        rectangle "Unified Diff Engine\n[terraform-plan Observed Diff]" as DiffEng #FED7AA
+    }
+}
+
+package "5. Reversible Execution & Sovereign OS Kernel" as L5 {
+    rectangle "Pre-Mutation Snapshot\n[CoW Backup]" as Snap #DCFCE7
+    database "SHA-256 Audit Journal\n[Hash-Chained Receipts]" as Audit
+    rectangle "Host Execution Engine\n[PTY Subshell Executor]" as HostExec #E0E7FF
+    rectangle "Atomic Rollback Engine\n[terminex undo <tx-id>]" as UndoEng #D1FAE5
+    rectangle "C-DAC BOSS Linux 10\n[Pragya & Secure BOSS (MAC)]" as BossOS #E2E8F0
+}
+
+' Control & Data Flow Connections
+User --> TUI : Natural Language / Command
+User --> WebUI
+User --> MCP
+TUI --> Indic
+WebUI --> Indic
+MCP --> Indic
+
+Indic --> Router : Standardized Operational Intent
+Router --> FastPath : Read-Only Status Query
+Router --> Step1 : Incident Triage / Mutation
+
+Step1 --> Step2 : Probe Execution
+Step2 --> Step3 : Structured Telemetry
+Step3 --> Step1 : Plan Refinement
+ReAct <--> Playbooks : Decision Trees
+ReAct <--> Memory : Similar Incident Lookup
+ReAct <--> SLM : Semantic Synthesis
+
+Step2 <--> FR : Query Incident Evidence
+Step2 <--> Search : Structural Config Outline
+Daemon --> RingBuf : Ingest Telemetry
+RingBuf --> TimeTravel
+
+Step3 --> ASTGate : Candidate Shell Command
+ASTGate --> Scorer : AST Validated & Scoped
+Scorer --> Bwrap : Tier 1 / Tier 2 (Mutating)
+Bwrap --> DiffEng : Namespace Execution
+DiffEng --> User : Render Observed Unified Diff
+
+User --> Snap : Approve Execution
+Snap --> Audit : Commit Snapshot Manifest
+Audit --> HostExec : Dispatch to Host
+FastPath --> HostExec : Direct Invocation
+UndoEng ..> HostExec : Rollback Transaction
+HostExec --> BossOS : Kernel & Service Invocation
+HostExec ..> Daemon : Record Mutation Event
+HostExec ..> Memory : Save Resolved Postmortem
+
+@enduml
